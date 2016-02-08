@@ -5,7 +5,7 @@
 // There's no main method in AppEngine sites, so you need to wire up the endpoint in the init() function.
 //
 // Example usage:
-//	 import (
+//   import (
 //     "github.com/wblakecaldwell/justin"
 //     "net/http"
 //   )
