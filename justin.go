@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"golang.org/x/net/context"
 	"google.golang.org/appengine"
+	"google.golang.org/appengine/delay"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/urlfetch"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // BuildJustinCommandHandler builds an HTTP endpoint that responds to a Justin Slack "slash command"
@@ -35,7 +37,6 @@ func BuildJustinCommandHandler(expectedCommand string, expectedToken string) fun
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := appengine.NewContext(req)
 
-		// fields used
 		userName := req.PostFormValue("user_name")
 		token := req.PostFormValue("token")
 		command := req.PostFormValue("command")
@@ -54,8 +55,7 @@ user id: %s
 response url: %s`, userName, token, command, text, req.PostFormValue("team_id"), req.PostFormValue("team_domain"), req.PostFormValue("channel_id"),
 			req.PostFormValue("channel_name"), req.PostFormValue("user_id"), responseURL)
 
-		// NOTE: we could verify that `token` is the same as the Slack token for this integration,
-		// but for this, we don't care.
+		// Validate if we're supposed to
 		if expectedCommand != "" && command != expectedCommand {
 			log.Errorf(ctx, "Forbidden - invalid command '%s'; expected '%s'", command, expectedCommand)
 			http.Error(w, `"Forbidden"`, http.StatusForbidden)
@@ -68,16 +68,14 @@ response url: %s`, userName, token, command, text, req.PostFormValue("team_id"),
 		}
 
 		// build the Slack response text
-		text = strings.TrimSpace(text)
-		googleSearchURL := fmt.Sprintf("https://www.google.com/#safe=off&q=%s", url.QueryEscape(text))
-		response := fmt.Sprintf("Here's what I found:\n\n%s", googleSearchURL)
+		response := fmt.Sprintf("Here's what I found:\n\nhttps://www.google.com/#q=%s", url.QueryEscape(strings.TrimSpace(text)))
 		if strings.HasSuffix(text, "?") {
 			response = fmt.Sprintf("Great question, @%s! %s", userName, response)
 		} else {
 			response = fmt.Sprintf("You got it, @%s! %s", userName, response)
 		}
 
-		// Create the JSON payload from the response text to send back to Slack
+		// Create the JSON payload with the response, to send back to Slack
 		respBytes, err := buildSlackJSON(ctx, response, true)
 		if err != nil {
 			// already logged
@@ -85,14 +83,25 @@ response url: %s`, userName, token, command, text, req.PostFormValue("team_id"),
 			return
 		}
 
-		// send the JSON to Slack
-		err = sendSlackJSON(ctx, responseURL, respBytes)
+		// tell Slack to show the user's command
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write([]byte(`{"response_type": "in_channel"}`))
 		if err != nil {
-			// already logged
-			http.Error(w, "Error", 500)
-			return
+			log.Errorf(ctx, "Error echoing the request: %s", err)
 		}
-		log.Debugf(ctx, "Success! Response sent back to Slack")
+
+		// queue up the delayed response
+		var laterFunc = delay.Func("key", func(delayCtx context.Context, x string) {
+			log.Debugf(delayCtx, "Sending delayed response to Slack for request: %s", text)
+			time.Sleep(500 * time.Millisecond)
+			err := sendSlackJSON(delayCtx, responseURL, respBytes)
+			if err != nil {
+				// already logged
+				return
+			}
+			log.Debugf(delayCtx, "Success! Response sent back to Slack: %s", respBytes)
+		})
+		laterFunc.Call(ctx, "")
 	}
 }
 
