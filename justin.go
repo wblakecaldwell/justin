@@ -17,47 +17,22 @@ import (
 func BuildJustinCommandHandler(expectedCommand string, expectedToken string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := appengine.NewContext(req)
-
-		userName := req.PostFormValue("user_name")
-		token := req.PostFormValue("token")
-		command := req.PostFormValue("command")
-		text := req.PostFormValue("text")
-		responseURL := req.PostFormValue("response_url")
-
-		if expectedCommand != "" && command != expectedCommand {
+		if (expectedCommand != "" && req.PostFormValue("command") != expectedCommand) || (expectedToken != "" && req.PostFormValue("token") != expectedToken) {
 			http.Error(w, `"Forbidden"`, http.StatusForbidden)
 			return
 		}
-		if expectedToken != "" && token != expectedToken {
-			http.Error(w, `"Forbidden"`, http.StatusForbidden)
-			return
-		}
-
-		response := fmt.Sprintf("Here's what I found:\n\nhttps://www.google.com/#q=%s", url.QueryEscape(strings.TrimSpace(text)))
-		if strings.HasSuffix(text, "?") {
-			response = fmt.Sprintf("Great question, @%s! %s", userName, response)
+		response := fmt.Sprintf("Here's what I found:\n\nhttps://www.google.com/#q=%s", url.QueryEscape(strings.TrimSpace(req.PostFormValue("text"))))
+		if strings.HasSuffix(req.PostFormValue("text"), "?") {
+			response = fmt.Sprintf("Great question, @%s! %s", req.PostFormValue("user_name"), response)
 		} else {
-			response = fmt.Sprintf("You got it, @%s! %s", userName, response)
+			response = fmt.Sprintf("You got it, @%s! %s", req.PostFormValue("user_name"), response)
 		}
-
-		respBytes, err := buildSlackJSON(ctx, response, true)
-		if err != nil {
-			http.Error(w, "Error", 500)
-			return
-		}
-
+		respBytes, _ := buildSlackJSON(ctx, response, true)
 		w.Header().Set("Content-Type", "application/json")
-		_, err = w.Write([]byte(`{"response_type": "in_channel"}`))
-		if err != nil {
-			return
-		}
-
+		w.Write([]byte(`{"response_type": "in_channel"}`))
 		var laterFunc = delay.Func("key", func(delayCtx context.Context, x string) {
 			time.Sleep(500 * time.Millisecond)
-			err := sendSlackJSON(delayCtx, responseURL, respBytes)
-			if err != nil {
-				return
-			}
+			sendSlackJSON(delayCtx, req.PostFormValue("response_url"), respBytes)
 		})
 		laterFunc.Call(ctx, "")
 	}
@@ -68,7 +43,6 @@ func buildSlackJSON(ctx context.Context, text string, isPublic bool) ([]byte, er
 		ResponseType string `json:"response_type"`
 		Text         string `json:"text"`
 	}
-
 	justinResponse := &JustinResponse{
 		Text: text,
 	}
@@ -77,24 +51,11 @@ func buildSlackJSON(ctx context.Context, text string, isPublic bool) ([]byte, er
 	} else {
 		justinResponse.ResponseType = "ephemeral"
 	}
-
-	justinJSON, err := json.Marshal(justinResponse)
-	if err != nil {
-		return nil, err
-	}
-
-	return justinJSON, nil
+	return json.Marshal(justinResponse)
 }
 
-func sendSlackJSON(ctx context.Context, url string, requestBytes []byte) error {
+func sendSlackJSON(ctx context.Context, url string, requestBytes []byte) {
 	client := urlfetch.Client(ctx)
-	slackResponse, err := client.Post(url, "application/json", bytes.NewReader(requestBytes))
-	if err != nil {
-		return err
-	}
-	if slackResponse.StatusCode != 200 {
-		return err
-	}
-	defer slackResponse.Body.Close()
-	return nil
+	slackResponse, _ := client.Post(url, "application/json", bytes.NewReader(requestBytes))
+	slackResponse.Body.Close()
 }
